@@ -1,0 +1,77 @@
+네, 알겠습니다. 지금까지 정말 길고 힘든 디버깅 과정을 거쳐 완성한 시스템의 최종 결과물을 GitHub에 올릴 수 있도록, 전문적인 README.md 파일 형식으로 완벽하게 정리해 드리겠습니다.
+아래 내용을 복사해서 GitHub 저장소의 README.md 파일에 그대로 붙여넣으시면 됩니다.
+ROSA: 다중 로봇 자율 주행 관제 시스템 (토픽 기반 프록시 아키텍처)
+최종 업데이트: 2025년 8월 12일
+본 프로젝트는 3대의 로봇(DP_03, DP_08, DP_09)을 단일 관제 시스템에서 효율적으로 제어하고 작업을 할당하기 위한 ROS 2 기반의 다중 로봇 관제 시스템입니다.
+가장 큰 특징은 domain_bridge를 통과할 때 불안정할 수 있는 Action 통신을 직접 사용하지 않고, '토픽 기반 프록시(Proxy) 패턴' 아키텍처를 적용하여 통신의 안정성과 견고함을 극대화한 것입니다.
+1. 핵심 아키텍처: 토픽 기반 프록시 패턴
+이 시스템은 Action 통신이 domain_bridge를 통과하며 발생하는 고질적인 연결 문제를 해결하기 위해, 다음과 같은 안정적인 양방향 토픽 통신 구조로 설계되었습니다.
+ * 명령 (관제 PC → 로봇 PC)
+   * robot_manager.py (관제): 사용자의 이동 명령("3번 왼쪽방 가")을 받아 waypoints.yaml 기반의 전체 경로(PoseStamped 리스트)를 계산합니다.
+   * 계산된 경로를 nav_msgs/msg/Path 메시지에 담아 로봇 고유의 토픽(예: /DP_03/waypoint_path_goal)으로 발행(Publish)합니다.
+   * domain_bridge는 이 간단하고 안정적인 Path 토픽을 해당 로봇의 도메인으로 전달합니다.
+ * 실행 및 결과 보고 (로봇 PC → 관제 PC)
+   * path_executor.py (로봇): 로봇 PC에서 실행되는 '프록시' 노드입니다. 자신의 경로 토픽( /DP_03/waypoint_path_goal)을 구독(Subscribe)합니다.
+   * 경로 메시지를 수신하면, 로봇 내부에서 Nav2의 /follow_waypoints 액션 서버에 직접 명령을 내립니다. (내부 통신이므로 100% 성공)
+   * Nav2로부터 작업 완료(SUCCESS) 또는 실패(FAILED) 결과를 받으면, 그 결과를 로봇 고유의 '결과 보고' 토픽(예: /DP_03/task_result)으로 발행합니다.
+   * domain_bridge는 이 '결과 보고' 토픽을 다시 관제 PC의 도메인으로 전달합니다.
+ * 상태 확인 (관제 PC)
+   * robot_manager.py (관제): '결과 보고' 토픽을 구독하고 있다가, "SUCCESS" 메시지를 받으면 status_logger.py로 "도착" 상태를 방송합니다.
+이 구조는 불안정한 Action 통신을 domain_bridge를 통해 직접 전달하는 대신, 가장 안정적인 Topic 통신만을 사용하므로 다중 로봇 환경에서 매우 견고하게 동작합니다.
+2. 파일 구성 및 역할
+관제 PC용 스크립트 (/0812_new_by_g 폴더)
+ * main.py:
+   * 시스템의 메인 실행 파일입니다.
+   * ROSARobotManager와 CommandParser를 초기화하고, 사용자로부터 텍스트 명령을 받는 입력 스레드를 실행합니다.
+ * robot_manager.py:
+   * 시스템의 '두뇌' 역할을 하는 핵심 노드입니다.
+   * 모든 로봇의 상태(RobotInfo)를 실시간으로 관리합니다.
+   * 로봇들의 위치(/amcl_pose), 배터리(/battery_present) 등의 토픽을 구독합니다.
+   * command_parser로부터 명령을 받으면, waypoints.yaml을 참고하여 경로를 계산하고 Path 토픽을 발행합니다.
+   * 로봇으로부터 온 '결과 보고' 토픽(/{robot_name}/task_result)을 구독하여 임무 완료를 인지합니다.
+   * status_logger.py가 볼 수 있도록 최종 상태 로그(/rosa/status_log)를 방송합니다.
+ * command_parser.py:
+   * 사용자의 텍스트 입력("9번 왼쪽방 가")을 분석하여 로봇 이름('DP_09')과 목적지 이름('왼쪽방')을 추출하고, robot_manager.py의 Maps_robot 함수를 호출합니다.
+ * status_logger.py:
+   * robot_manager.py가 방송하는 이벤트 로그 토픽(/rosa/status_log)을 구독하여 터미널에 실시간으로 깔끔하게 출력하는 독립적인 모니터링 스크립트입니다.
+ * config.py:
+   * 제어할 로봇의 이름 목록(ROBOT_NAMES) 등 핵심 설정값을 정의합니다.
+ * waypoints.yaml:
+   * 상행선/하행선 경로와 모든 목적지의 좌표를 정의하는 데이터 파일입니다.
+ * 0812_domain.yaml:
+   * 관제 PC(Domain 20)와 각 로봇 PC(Domain 13, 18, 19) 간의 통신을 연결해주는 domain_bridge 설정 파일입니다. 모든 Topic 통신 규칙이 정의되어 있습니다.
+로봇 PC용 스크립트 (pinky_violet 워크스페이스)
+ * path_executor.py:
+   * 각 로봇 PC에서 실행되는 '프록시' 또는 '경로 실행기' 노드입니다.
+   * 관제 PC로부터 할당된 자신의 경로 토픽(예: /DP_03/waypoint_path_goal)을 구독합니다.
+   * 경로를 수신하면 로봇 내부의 Nav2 followWaypoints 액션 서버에 직접 명령을 내립니다.
+   * Nav2로부터 임무 완료/실패 결과를 받으면, 자신의 결과 보고 토픽(예: /DP_03/task_result)으로 관제 PC에 보고합니다.
+3. 시스템 실행 절차
+1단계: 각 로봇 PC에서 실행 (DP_03, DP_08, DP_09)
+각 로봇 PC에서 터미널을 2개 열고 아래 명령을 각각 실행합니다. (DP_03 기준 예시)
+ * 터미널 1: Nav2 실행
+   export ROS_DOMAIN_ID=13
+ros2 launch pinky_navigation 0807_nav2.launch.xml robot_name:=DP_03
+
+ * 터미널 2: 경로 실행기(프록시) 실행
+   export ROS_DOMAIN_ID=13
+export ROBOT_NAME=DP_03
+ros2 run pinky_navigation path_executor
+
+2단계: 관제 PC에서 실행
+관제 PC에서 터미널을 3개 열고 아래 명령을 각각 실행합니다.
+ * 터미널 1: Domain Bridge 실행
+   export ROS_DOMAIN_ID=20
+ros2 run domain_bridge domain_bridge /path/to/your/0812_domain.yaml
+
+ * 터미널 2: 상태 로그 모니터 실행
+   python3 status_logger.py
+
+ * 터미널 3: 메인 제어 프로그램 실행 (명령 입력)
+   python3 main.py
+
+4. 사용법
+모든 시스템이 실행되면, 관제 PC의 터미널 3에서 다음과 같은 명령을 입력하여 로봇을 제어할 수 있습니다. 모든 진행 상황은 터미널 2에 실시간으로 표시됩니다.
+ * 3번 왼쪽방 가
+ * 9번 픽업대 가
+ * 8번 오른쪽방 가
